@@ -1,0 +1,27 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "reacut",
+  "version": "0.7.1",
+  "description": "koreacut 데스크톱 앱을 연결해 Codex 사이드바에서 로컬 영상을 편집합니다.",
+  "author": {
+    "name": "ReaCut contributors"
+  },
+  "license": "MIT",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "koreacut",
+        "shortDescription": "Codex 사이드바에서 로컬 영상 편집",
+        "longDescription": "koreacut을 연결해 타임라인, 자막, 효과와 로컬 내보내기를 사용합니다.",
+        "developerName": "ReaCut contributors",
+        "category": "Productivity",
+        "logo": "./assets/icon.png",
+        "composerIcon": "./assets/icon.png",
+        "defaultPrompt": [
+          "koreacut으로 영상 편집기를 열어 줘.",
+          "선택한 소재를 편집하고 프로젝트 파일을 저장해 줘."
+        ]
+      }
+    }
+  }
+}

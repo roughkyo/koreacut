@@ -1,0 +1,580 @@
+import { useUITranslation } from "../i18n";
+import { useEffect, useRef, useState } from "react";
+import {
+  Circle,
+  Crop,
+  Droplets,
+  LockKeyhole,
+  RotateCcw,
+  Scan,
+  Square,
+} from "lucide-react";
+import type {
+  ChromaKey,
+  Clip,
+  CropRect,
+  MediaAsset,
+  ShapeMask,
+} from "../core/types";
+import { useEditorStore } from "../editor/store";
+import { getCropPixels } from "../core/visual";
+import "./VisualTools.css";
+
+export interface VisualToolsProps {
+  mode: "crop" | "chroma" | "mask";
+  clip: Clip;
+  asset?: MediaAsset;
+  onUpdate: (patch: Partial<Clip>) => void;
+  locked?: boolean;
+}
+export const FULL_CROP: CropRect = { x: 0, y: 0, width: 1, height: 1 };
+export const DEFAULT_CHROMA: ChromaKey = {
+  enabled: true,
+  color: "#00ff00",
+  similarity: 0.1,
+  blend: 0.05,
+};
+export const DEFAULT_MASK: ShapeMask = {
+  shape: "rectangle",
+  width: 1,
+  height: 1,
+  feather: 0,
+  invert: false,
+};
+const clamp = (value: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, value));
+/** Largest centered source crop matching a pixel aspect ratio. */
+export function centeredCrop(
+  sourceWidth: number,
+  sourceHeight: number,
+  ratio: number,
+): CropRect {
+  if (
+    ![sourceWidth, sourceHeight, ratio].every(
+      (value) => Number.isFinite(value) && value > 0,
+    )
+  )
+    return { ...FULL_CROP };
+  const aspect = sourceWidth / sourceHeight;
+  const width = aspect > ratio ? ratio / aspect : 1;
+  const height = aspect < ratio ? aspect / ratio : 1;
+  return { x: (1 - width) / 2, y: (1 - height) / 2, width, height };
+}
+export function updateCropField(
+  crop: CropRect,
+  field: keyof CropRect,
+  value: number,
+): CropRect {
+  if (!Number.isFinite(value)) return crop;
+  const next = { ...crop };
+  if (field === "x") next.x = clamp(value, 0, 1 - next.width);
+  if (field === "y") next.y = clamp(value, 0, 1 - next.height);
+  if (field === "width") next.width = clamp(value, 0.01, 1 - next.x);
+  if (field === "height") next.height = clamp(value, 0.01, 1 - next.y);
+  return next;
+}
+function useTransaction() {
+  const open = useRef(false);
+  const begin = () => {
+    if (!open.current) {
+      useEditorStore.getState().beginTransaction();
+      open.current = true;
+    }
+  };
+  const end = () => {
+    if (open.current) {
+      useEditorStore.getState().endTransaction();
+      open.current = false;
+    }
+  };
+  useEffect(
+    () => () => {
+      if (open.current) useEditorStore.getState().endTransaction();
+    },
+    [],
+  );
+  return { begin, end };
+}
+function NumberControl({
+  label,
+  value,
+  min = 0,
+  max = 100,
+  step = 0.1,
+  suffix = "%",
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  suffix?: string;
+  onChange: (value: number) => void;
+}) {
+  const transaction = useTransaction();
+  const [draft, setDraft] = useState(String(Number(value.toFixed(3))));
+  const focused = useRef(false);
+  const draftRef = useRef(draft);
+  useEffect(() => {
+    if (!focused.current) {
+      const next = String(Number(value.toFixed(3)));
+      draftRef.current = next;
+      setDraft(next);
+    }
+  }, [value]);
+  return (
+    <label className="visual-number">
+      <span>{label}</span>
+      <div>
+        <input
+          aria-label={label}
+          type="number"
+          min={min}
+          max={max}
+          step={step}
+          value={draft}
+          onFocus={() => {
+            focused.current = true;
+            const next = String(Number(value.toFixed(3)));
+            draftRef.current = next;
+            setDraft(next);
+            transaction.begin();
+          }}
+          onChange={(event) => {
+            const raw = event.target.value;
+            draftRef.current = raw;
+            setDraft(raw);
+            if (raw.trim() !== "" && Number.isFinite(Number(raw)))
+              onChange(clamp(Number(raw), min, max));
+          }}
+          onBlur={() => {
+            focused.current = false;
+            const parsed =
+              draftRef.current.trim() === "" ? value : Number(draftRef.current);
+            const next = Number.isFinite(parsed)
+              ? clamp(parsed, min, max)
+              : value;
+            draftRef.current = String(Number(next.toFixed(3)));
+            setDraft(draftRef.current);
+            onChange(next);
+            transaction.end();
+          }}
+        />
+        {suffix && <span>{suffix}</span>}
+      </div>
+    </label>
+  );
+}
+function RangeControl({
+  label,
+  value,
+  min,
+  max,
+  step = 0.01,
+  onChange,
+  percent = true,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  onChange: (value: number) => void;
+  percent?: boolean;
+}) {
+  const transaction = useTransaction();
+  return (
+    <label className="visual-range">
+      <div>
+        <span>{label}</span>
+        <output>
+          {percent ? `${Math.round(value * 100)}%` : value.toFixed(2)}
+        </output>
+      </div>
+      <input
+        aria-label={label}
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onFocus={transaction.begin}
+        onBlur={transaction.end}
+        onPointerDown={transaction.begin}
+        onPointerUp={transaction.end}
+        onPointerCancel={transaction.end}
+        onKeyDown={transaction.begin}
+        onKeyUp={transaction.end}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+    </label>
+  );
+}
+function ColorControl({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (color: string) => void;
+}) {
+  const ui = useUITranslation();
+  const transaction = useTransaction();
+  return (
+    <label className="visual-color">
+      <span>{ui("대상 색상", "Target color")}</span>
+      <input
+        aria-label={ui("대상 색상", "Target color")}
+        type="color"
+        value={value}
+        onFocus={transaction.begin}
+        onBlur={transaction.end}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <code>{value.toUpperCase()}</code>
+    </label>
+  );
+}
+export default function VisualTools({
+  mode,
+  clip,
+  asset,
+  onUpdate,
+  locked = false,
+}: VisualToolsProps) {
+  const ui = useUITranslation();
+  const [preset, setPreset] = useState("custom");
+  useEffect(() => setPreset("custom"), [clip.id, mode]);
+  const crop = clip.crop ?? FULL_CROP,
+    chroma = clip.chromaKey ?? DEFAULT_CHROMA,
+    mask = clip.mask ?? DEFAULT_MASK;
+  const cropEnabled = !!clip.crop,
+    chromaEnabled = !!clip.chromaKey?.enabled,
+    maskEnabled = !!clip.mask;
+  const updateChroma = (patch: Partial<ChromaKey>) =>
+    onUpdate({ chromaKey: { ...chroma, ...patch } });
+  const updateMask = (patch: Partial<ShapeMask>) =>
+    onUpdate({ mask: { ...mask, ...patch } });
+  const cropPixels = asset ? getCropPixels(asset, crop) : undefined;
+  const cropHint =
+    asset && asset.width > 0 && asset.height > 0
+      ? `${cropPixels!.width} × ${cropPixels!.height} px`
+      : ui("소스 재료 범위", "Source media range");
+  const sourceAspect =
+    asset && asset.width > 0 && asset.height > 0
+      ? asset.width / asset.height
+      : 16 / 9;
+  const diagramWidth = Math.min(240, 110 * sourceAspect);
+  const title =
+    mode === "crop"
+      ? ui("소스 프레임 자르기", "Source crop")
+      : mode === "chroma"
+        ? ui("크로마 키", "Chroma key")
+        : ui("모양 마스크", "Shape mask");
+  return (
+    <section className="visual-tools" aria-label={title}>
+      <div className="visual-tools-heading">
+        {mode === "crop" ? (
+          <Crop size={14} />
+        ) : mode === "chroma" ? (
+          <Droplets size={14} />
+        ) : (
+          <Scan size={14} />
+        )}
+        <h3>{title}</h3>
+        {locked && <LockKeyhole size={12} />}
+      </div>
+      {locked && <p className="visual-locked">{ui("트랙은 잠겨 있으며 잠금이 해제되면 편집할 수 있습니다.", "Track locked. Unlock it to edit.")}</p>}
+      <fieldset disabled={locked}>
+        {mode === "crop" && (
+          <>
+            <label className="visual-toggle">
+              <span>{ui("화면 자르기 활성화", "Enable crop")}</span>
+              <input
+                aria-label={ui("화면 자르기 활성화", "Enable crop")}
+                type="checkbox"
+                checked={cropEnabled}
+                onChange={(event) =>
+                  onUpdate({
+                    crop: event.target.checked ? { ...FULL_CROP } : undefined,
+                  })
+                }
+              />
+            </label>
+            <p className="visual-description">
+              {ui("소스 화면의 선택 범위를 유지하고 캔버스 비율에 맞게 조정합니다. 백분율은 원본 자료를 기준으로 합니다.", "Keep the selected source region and fit it to the canvas. Percentages are relative to the source media.")}</p>
+            <fieldset disabled={!cropEnabled} className="visual-controls">
+              <label className="visual-ratio">
+                <span>{ui("중앙 비율", "Centered aspect ratio")}</span>
+                <select
+                  aria-label={ui("자르기 비율", "Crop aspect ratio")}
+                  value={preset}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setPreset(value);
+                    if (value !== "custom") {
+                      const [w, h] = value.split(":").map(Number);
+                      onUpdate({
+                        crop: centeredCrop(
+                          asset?.width ?? 1,
+                          asset?.height ?? 1,
+                          w / h,
+                        ),
+                      });
+                    }
+                  }}
+                >
+                  <option value="custom">{ui("사용자 정의 범위", "Custom region")}</option>
+                  <option value="1:1">{ui("1:1 · 정사각형", "1:1 · Square")}</option>
+                  <option value="16:9">{ui("16:9 · 가로", "16:9 · Landscape")}</option>
+                  <option value="4:3">{ui("4:3 · 클래식", "4:3 · Classic")}</option>
+                  <option value="9:16">{ui("9:16 · 세로", "9:16 · Portrait")}</option>
+                </select>
+              </label>
+              <div
+                className="visual-crop-diagram"
+                aria-hidden="true"
+                style={{
+                  width: diagramWidth,
+                  height: diagramWidth / sourceAspect,
+                  aspectRatio: sourceAspect,
+                }}
+              >
+                <div
+                  style={{
+                    left: `${crop.x * 100}%`,
+                    top: `${crop.y * 100}%`,
+                    width: `${crop.width * 100}%`,
+                    height: `${crop.height * 100}%`,
+                  }}
+                >
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                </div>
+              </div>
+              <div className="visual-numbers-grid">
+                {(["width", "height", "x", "y"] as const).map((field) => (
+                  <NumberControl
+                    key={field}
+                    label={
+                      {
+                        width: ui("자르기 너비", "Crop width"),
+                        height: ui("자르기 높이", "Crop height"),
+                        x: ui("왼쪽 위치", "Left position"),
+                        y: ui("상단 위치", "Top position"),
+                      }[field]
+                    }
+                    value={crop[field] * 100}
+                    min={field === "width" || field === "height" ? 1 : 0}
+                    max={
+                      (field === "x"
+                        ? 1 - crop.width
+                        : field === "y"
+                          ? 1 - crop.height
+                          : field === "width"
+                            ? 1 - crop.x
+                            : 1 - crop.y) * 100
+                    }
+                    onChange={(value) => {
+                      setPreset("custom");
+                      onUpdate({
+                        crop: updateCropField(crop, field, value / 100),
+                      });
+                    }}
+                  />
+                ))}
+              </div>
+              <div className="visual-summary">
+                <Crop size={11} />
+                <span>{cropHint}</span>
+                <span>
+                  {(
+                    (crop.width * (asset?.width ?? 1)) /
+                    (crop.height * (asset?.height ?? 1))
+                  ).toFixed(2)}
+                  :1
+                </span>
+              </div>
+            </fieldset>
+            <button
+              className="visual-reset"
+              disabled={!cropEnabled}
+              onClick={() => {
+                setPreset("custom");
+                onUpdate({ crop: undefined });
+              }}
+            >
+              <RotateCcw size={12} />
+              {ui("전체 프레임으로 재설정", "Reset to full frame")}</button>
+          </>
+        )}
+        {mode === "chroma" && (
+          <>
+            <label className="visual-toggle">
+              <span>{ui("크로마 키잉 활성화", "Enable chroma key")}</span>
+              <input
+                aria-label={ui("크로마 키잉 활성화", "Enable chroma key")}
+                type="checkbox"
+                checked={chromaEnabled}
+                onChange={(event) =>
+                  onUpdate({
+                    chromaKey: event.target.checked
+                      ? { ...chroma, enabled: true }
+                      : undefined,
+                  })
+                }
+              />
+            </label>
+            <p className="visual-description">
+              {ui("선택한 배경색을 투명하게 변경하여 아래 프레임 또는 캔버스 배경을 표시합니다.", "Make the selected background color transparent to reveal the video or canvas below.")}</p>
+            <fieldset disabled={!chromaEnabled} className="visual-controls">
+              <div className="visual-color-presets">
+                <button
+                  className={
+                    chroma.color.toLowerCase() === "#00ff00" ? "active" : ""
+                  }
+                  onClick={() => updateChroma({ color: "#00ff00" })}
+                >
+                  <i style={{ background: "#00ff00" }} />
+                  {ui("그린 스크린", "Green screen")}</button>
+                <button
+                  className={
+                    chroma.color.toLowerCase() === "#0000ff" ? "active" : ""
+                  }
+                  onClick={() => updateChroma({ color: "#0000ff" })}
+                >
+                  <i style={{ background: "#0000ff" }} />
+                  {ui("블루 스크린", "Blue screen")}</button>
+              </div>
+              <ColorControl
+                value={chroma.color}
+                onChange={(color) => updateChroma({ color })}
+              />
+              <RangeControl
+                label={ui("색상 허용 오차", "Color tolerance")}
+                value={chroma.similarity}
+                min={0.01}
+                max={1}
+                onChange={(similarity) => updateChroma({ similarity })}
+              />
+              <RangeControl
+                label={ui("엣지 블렌딩", "Edge blend")}
+                value={chroma.blend}
+                min={0}
+                max={1}
+                onChange={(blend) => updateChroma({ blend })}
+              />
+              <p className="visual-tip">
+                {ui("낮은 허용 오차로 시작하여 배경이 사라질 때까지 증가시킵니다. Edge Blending은 투명한 영역의 경계를 부드럽게 만듭니다.", "Start with low tolerance and increase it until the background disappears. Edge blend softens the transparent region's boundary.")}</p>
+            </fieldset>
+            <button
+              className="visual-reset"
+              disabled={!clip.chromaKey}
+              onClick={() => onUpdate({ chromaKey: undefined })}
+            >
+              <RotateCcw size={12} />
+              {ui("크로마 키 지우기", "Clear chroma key")}</button>
+          </>
+        )}
+        {mode === "mask" && (
+          <>
+            <label className="visual-toggle">
+              <span>{ui("모양 마스크 활성화", "Enable shape mask")}</span>
+              <input
+                aria-label={ui("모양 마스크 활성화", "Enable shape mask")}
+                type="checkbox"
+                checked={maskEnabled}
+                onChange={(event) =>
+                  onUpdate({
+                    mask: event.target.checked
+                      ? { ...DEFAULT_MASK }
+                      : undefined,
+                  })
+                }
+              />
+            </label>
+            <p className="visual-description">
+              {ui("화면 중앙을 기준으로 지정된 모양을 유지하거나 선택을 반전하여 중앙 영역을 숨길 수 있습니다.", "Keep the selected shape around the frame center, or invert it to hide the center region.")}</p>
+            <fieldset disabled={!maskEnabled} className="visual-controls">
+              <div className="visual-shapes">
+                <button
+                  className={mask.shape === "rectangle" ? "active" : ""}
+                  aria-pressed={mask.shape === "rectangle"}
+                  onClick={() => updateMask({ shape: "rectangle" })}
+                >
+                  <Square size={18} />
+                  <span>{ui("직사각형", "Rectangle")}</span>
+                </button>
+                <button
+                  className={mask.shape === "ellipse" ? "active" : ""}
+                  aria-pressed={mask.shape === "ellipse"}
+                  onClick={() => updateMask({ shape: "ellipse" })}
+                >
+                  <Circle size={18} />
+                  <span>{ui("타원", "Ellipse")}</span>
+                </button>
+              </div>
+              <div className="visual-numbers-grid">
+                <NumberControl
+                  label={ui("마스크 너비", "Mask width")}
+                  value={mask.width * 100}
+                  min={1}
+                  onChange={(width) => updateMask({ width: width / 100 })}
+                />
+                <NumberControl
+                  label={ui("마스크 높이", "Mask height")}
+                  value={mask.height * 100}
+                  min={1}
+                  onChange={(height) => updateMask({ height: height / 100 })}
+                />
+              </div>
+              <RangeControl
+                label={ui("마스크 페더", "Mask feather")}
+                value={mask.feather}
+                min={0}
+                max={0.5}
+                step={0.005}
+                onChange={(feather) => updateMask({ feather })}
+              />
+              <label className="visual-toggle visual-invert">
+                <span>{ui("마스크 반전", "Invert mask")}</span>
+                <input
+                  aria-label={ui("마스크 반전", "Invert mask")}
+                  type="checkbox"
+                  checked={mask.invert}
+                  onChange={(event) =>
+                    updateMask({ invert: event.target.checked })
+                  }
+                />
+              </label>
+              <div
+                className={`visual-mask-diagram ${mask.invert ? "is-inverted" : ""}`}
+                aria-hidden="true"
+              >
+                <div
+                  style={{
+                    width: `${mask.width * 100}%`,
+                    height: `${mask.height * 100}%`,
+                    borderRadius: mask.shape === "ellipse" ? "50%" : "0",
+                    filter: `blur(${mask.feather * 12}px)`,
+                  }}
+                />
+              </div>
+              <p className="visual-tip">
+                {ui("소스 이미지를 기준으로 한 마스크 크기, 페더 값은 가장자리 전환 너비를 제어합니다.", "Mask size is relative to the source frame. Feather controls the edge transition width.")}</p>
+            </fieldset>
+            <button
+              className="visual-reset"
+              disabled={!maskEnabled}
+              onClick={() => onUpdate({ mask: undefined })}
+            >
+              <RotateCcw size={12} />
+              {ui("마스크 지우기", "Clear mask")}</button>
+          </>
+        )}
+      </fieldset>
+    </section>
+  );
+}

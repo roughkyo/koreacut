@@ -1,0 +1,12 @@
+koreacut Windows x64 내장 미디어 도구
+
+FFmpeg 9.0.2와 x264 b35605ace3ddf7c1a5d67a2eb553f034aef41d55를 소스에서 빌드했습니다.
+FFmpeg와 FFprobe는 앱에서 별도 프로세스로 실행합니다. 이 빌드는 GPL v2 이상을 따릅니다.
+FFmpeg의 JPEG 처리 일부는 Independent JPEG Group의 작업을 바탕으로 합니다. 원본 소스에 포함된 해당 파일을 수정하지 않았습니다.
+
+대응 소스의 원본 주소, 체크섬, 빌드 명령과 라이선스는 https://github.com/roughkyo/koreacut/tree/main/media-build 에 있습니다.
+FFmpeg: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+x264: https://code.videolan.org/videolan/x264/-/tree/b35605ace3ddf7c1a5d67a2eb553f034aef41d55
+
+
+zlib 1.4를 정적으로 연결했습니다. zlib 라이선스와 소스는 같은 media-build 안내에서 확인할 수 있습니다.
